@@ -1,0 +1,13 @@
+node_modules
+npm-debug.log
+.git
+.github
+test
+Dockerfile
+.dockerignore
+.eslintrc.json
+README.md
+k8s
+.agents
+.gemini
+coverage

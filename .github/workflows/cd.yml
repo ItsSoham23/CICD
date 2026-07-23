@@ -1,0 +1,96 @@
+name: CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_name: ${{ steps.prep.outputs.image_name }}
+      image_tag: ${{ steps.prep.outputs.image_tag }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Prepare Registry & Image Names
+        id: prep
+        run: |
+          # Lowercase the repo name to avoid ghcr.io registry push issues
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_NAME="ghcr.io/${REPO_LOWER}"
+          # Get short SHA
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "image_name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
+          echo "image_tag=${SHORT_SHA}" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.prep.outputs.image_name }}:${{ steps.prep.outputs.image_tag }}
+            ${{ steps.prep.outputs.image_name }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-to-kind:
+    runs-on: self-hosted
+    needs: build-and-push
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup K8s Manifests & Deploy
+        run: |
+          IMAGE_NAME="${{ needs.build-and-push.outputs.image_name }}"
+          IMAGE_TAG="${{ needs.build-and-push.outputs.image_tag }}"
+          
+          # Replace placeholders in deployment template
+          sed -i "s|IMAGE_REPOSITORY_PLACEHOLDER|${IMAGE_NAME}|g" k8s/deployment.yaml
+          sed -i "s|IMAGE_TAG_PLACEHOLDER|${IMAGE_TAG}|g" k8s/deployment.yaml
+          
+          # Apply manifest
+          kubectl apply -f k8s/
+
+      - name: Wait for Rollout to Complete
+        run: |
+          kubectl rollout status deployment/url-shortener-deployment --timeout=90s
+
+      - name: Post-Deploy Health Check
+        run: |
+          # Attempt to hit the NodePort service endpoint on localhost.
+          # We retry up to 10 times with 3 seconds delay.
+          echo "Verifying service health..."
+          SUCCESS=0
+          for i in {1..10}; do
+            STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:30080/health || echo "000")
+            if [ "$STATUS_CODE" -eq 200 ]; then
+              echo "Health check passed with HTTP 200!"
+              SUCCESS=1
+              break
+            fi
+            echo "Attempt $i: Service not ready yet (HTTP $STATUS_CODE). Retrying in 3 seconds..."
+            sleep 3
+          done
+          
+          if [ "$SUCCESS" -ne 1 ]; then
+            echo "Error: Post-deploy health check failed!"
+            exit 1
+          fi

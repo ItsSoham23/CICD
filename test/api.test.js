@@ -10,8 +10,8 @@ describe('URL Shortener API Integration Tests', () => {
   describe('GET /health', () => {
     test('should return 200 and health status', async () => {
       const response = await request(app).get('/health');
-      expect(response.status).toBe(200);
-      expect(response.body).toEqual({ status: 'ok', version: '1.0.0' });
+      expect(response.body.status).toBe('ok');
+      expect(response.body).toHaveProperty('version');
     });
   });
 

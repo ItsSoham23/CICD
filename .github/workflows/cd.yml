@@ -58,6 +58,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup K8s Manifests & Deploy
+        shell: bash
         run: |
           IMAGE_NAME="${{ needs.build-and-push.outputs.image_name }}"
           IMAGE_TAG="${{ needs.build-and-push.outputs.image_tag }}"
@@ -70,17 +71,32 @@ jobs:
           kubectl apply -f k8s/
 
       - name: Wait for Rollout to Complete
+        shell: bash
         run: |
           kubectl rollout status deployment/url-shortener-deployment --timeout=90s
 
       - name: Post-Deploy Health Check
+        shell: bash
         run: |
-          # Attempt to hit the NodePort service endpoint on localhost.
-          # We retry up to 10 times with 3 seconds delay.
-          echo "Verifying service health..."
+          echo "Starting port-forward..."
+          # Start port-forward in background
+          kubectl port-forward service/url-shortener-service 8080:3000 &
+          PF_PID=$!
+          
+          # Ensure port-forward is killed on exit
+          cleanup() {
+            echo "Cleaning up port-forward (PID: $PF_PID)..."
+            kill $PF_PID || true
+          }
+          trap cleanup EXIT
+          
+          # Give it a couple of seconds to establish connection
+          sleep 3
+          
+          echo "Verifying service health via port-forward..."
           SUCCESS=0
           for i in {1..10}; do
-            STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:30080/health || echo "000")
+            STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health || echo "000")
             if [ "$STATUS_CODE" -eq 200 ]; then
               echo "Health check passed with HTTP 200!"
               SUCCESS=1

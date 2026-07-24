@@ -3,3 +3,5 @@ npm-debug.log
 .gemini/
 coverage/
 .env
+
+actions-runner/
